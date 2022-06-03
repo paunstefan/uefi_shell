@@ -17,10 +17,11 @@ const EFI_PAGE_SIZE: u64 = 0x1000;
 fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     uefi_services::init(&mut system_table).unwrap();
 
-    // TODO
+    // TODO: allegedly if watchdog timer is not disabled
+    // system will reboot after 5 minutes, did not happen in tests.
     // system_table
     //     .boot_services()
-    //     .set_watchdog_timer(0, 0, None)
+    //     .set_watchdog_timer(0, 65536, None)
     //     .unwrap();
 
     system_table.stdout().reset(false).unwrap();
@@ -37,38 +38,11 @@ fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     Status::SUCCESS
 }
 
-fn run_command(system_table: &mut SystemTable<Boot>, command: String) {
-    let arguments = command
-        .split_ascii_whitespace()
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>();
-
-    if arguments.is_empty() {
-        error!("No command given!");
-        return;
-    }
-
-    match arguments[0].as_str() {
-        "version" => print_version(system_table),
-        "memorymap" => print_memory_map(system_table),
-        "echo" => echo(system_table.stdout(), &arguments[1..]),
-        _ => {
-            error!("Command \"{}\" not found!", arguments[0]);
-            return;
-        }
-    }
-}
-
-fn echo(stdout: &mut console::text::Output, arguments: &[String]) {
-    for word in arguments {
-        write!(stdout, "{}", word).unwrap();
-        write!(stdout, " ").unwrap();
-    }
-    writeln!(stdout).unwrap();
-}
-
+/// Blocks until key is pressed then returns the key
 fn wait_for_key(system_table: &mut SystemTable<Boot>) -> console::text::Key {
     loop {
+        // Safety: the Event is not used in other places so it can't be invalidated
+        // while waiting for it here
         let event = unsafe { system_table.stdin().wait_for_key_event().unsafe_clone() };
         let mut event_list = [event];
 
@@ -95,14 +69,54 @@ fn read_line(system_table: &mut SystemTable<Boot>) -> String {
                 break;
             }
 
+            // On Backspace, delete character from string
+            if key == uefi::Char16::try_from('\u{8}').unwrap() {
+                if ret.is_empty() {
+                    continue;
+                }
+
+                ret.pop();
+            }
+
             let character: char = key.into();
             write!(system_table.stdout(), "{}", character).unwrap();
 
-            ret.push(character);
+            if character.is_alphanumeric() {
+                ret.push(character);
+            }
         }
     }
 
     ret
+}
+
+fn run_command(system_table: &mut SystemTable<Boot>, command: String) {
+    let arguments = command
+        .split_ascii_whitespace()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>();
+
+    if arguments.is_empty() {
+        error!("No command given!");
+        return;
+    }
+
+    match arguments[0].as_str() {
+        "version" => print_version(system_table),
+        "memorymap" => print_memory_map(system_table),
+        "echo" => echo(system_table.stdout(), &arguments[1..]),
+        _ => {
+            error!("Command \"{}\" not found!", arguments[0]);
+        }
+    }
+}
+
+fn echo(stdout: &mut console::text::Output, arguments: &[String]) {
+    for word in arguments {
+        write!(stdout, "{}", word).unwrap();
+        write!(stdout, " ").unwrap();
+    }
+    writeln!(stdout).unwrap();
 }
 
 fn print_version(system_table: &mut SystemTable<Boot>) {
